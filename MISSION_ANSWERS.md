@@ -247,7 +247,73 @@ X-XSS-Protection: 1; mode=block
 
 ---
 
+## Part 5: Scaling & Reliability
+
+### Exercise 5.1–5.2: Health Check (`/health` vs `/ready`) và Graceful Shutdown
+1. **Liveness (`/health`) khác Readiness (`/ready`) ở đâu?**
+   - **`/health` (Liveness probe):** Trả lời câu hỏi *"Process/container còn sống không?"*. Platform gọi định kỳ; nếu trả về non-200 hoặc timeout thì platform **restart** container. Không nên làm fail `/health` chỉ vì một dependency tạm mất kết nối nếu bản thân process vẫn ổn.
+   - **`/ready` (Readiness probe):** Trả lời câu hỏi *"Instance đã sẵn sàng nhận traffic chưa?"*. Load balancer kiểm tra các dependency bắt buộc (ví dụ Redis/DB) và cờ `_is_ready`; nếu trả **`503`**, load balancer **tạm ngừng route traffic** vào instance đó (khi đang khởi động hoặc đang shutdown) nhưng không restart container.
+2. **Graceful shutdown (`SIGTERM`):**
+   - Trong `05-scaling-reliability/develop/app.py` (dòng 41–81), middleware `track_requests` đếm số request đang xử lý (`_in_flight_requests`). Khi nhận `SIGTERM` để tắt/redeploy container, `lifespan` đặt `_is_ready = False` để ngừng nhận traffic mới và chờ `_in_flight_requests == 0` (tối đa 30 giây) trước khi đóng app, tránh cắt ngang request của user.
+
+### Exercise 5.3–5.5: Stateless Design, Load Balancing (3 instances) và `test_stateless.py`
+1. **Vì sao state lưu trong RAM bị hỏng khi chạy nhiều instance?**
+   - Mỗi container (`agent-1`, `agent-2`, `agent-3`) có vùng nhớ RAM riêng biệt. Khi Nginx load balancer phân tán các request của cùng một user sang các instance khác nhau, nếu lịch sử hội thoại chỉ lưu trong dict RAM thì request thứ 2 rơi sang instance khác sẽ không tìm thấy session cũ.
+   - **Giải pháp (`05-scaling-reliability/production/app.py`):** Lưu toàn bộ session (`session:{session_id}`) và lịch sử chat vào **Redis** (`save_session`, `load_session`, `append_to_history` với TTL 3600s), giúp mọi instance đọc/ghi chung một nguồn state.
+2. **Kết quả chạy `docker compose -p k5-day14-scaling up -d --build --scale agent=3` và `python3 test_stateless.py`:**
+   ```text
+   ============================================================
+   Stateless Scaling Demo
+   ============================================================
+
+   Session ID: 6c183c5d-f782-4d94-9915-52b757ccf6b0
+
+   Request 1: [instance-598710]
+     Q: What is Docker?
+     A: Container là cách đóng gói app để chạy ở mọi nơi. Build once, run anywhere!...
+
+   Request 2: [instance-fda4b2]
+     Q: Why do we need containers?
+     A: Agent đang hoạt động tốt! (mock response) Hỏi thêm câu hỏi đi nhé....
+
+   Request 3: [instance-598710]
+     Q: What is Kubernetes?
+     A: Đây là câu trả lời từ AI agent (mock). Trong production, đây sẽ là response từ O...
+
+   Request 4: [instance-04b592]
+     Q: How does load balancing work?
+     A: Agent đang hoạt động tốt! (mock response) Hỏi thêm câu hỏi đi nhé....
+
+   Request 5: [instance-fda4b2]
+     Q: What is Redis used for?
+     A: Agent đang hoạt động tốt! (mock response) Hỏi thêm câu hỏi đi nhé....
+
+   ------------------------------------------------------------
+   Total requests: 5
+   Instances used: {'instance-04b592', 'instance-fda4b2', 'instance-598710'}
+   ✅ All requests served despite different instances!
+
+   --- Conversation History ---
+   Total messages: 10
+     [user]: What is Docker?...
+     [assistant]: Container là cách đóng gói app để chạy ở mọi nơi. Build once...
+     [user]: Why do we need containers?...
+     [assistant]: Agent đang hoạt động tốt! (mock response) Hỏi thêm câu hỏi đ...
+     [user]: What is Kubernetes?...
+     [assistant]: Đây là câu trả lời từ AI agent (mock). Trong production, đây...
+     [user]: How does load balancing work?...
+     [assistant]: Agent đang hoạt động tốt! (mock response) Hỏi thêm câu hỏi đ...
+     [user]: What is Redis used for?...
+     [assistant]: Agent đang hoạt động tốt! (mock response) Hỏi thêm câu hỏi đ...
+
+   ✅ Session history preserved across all instances via Redis!
+   ```
+   - **Giải thích kết quả:** 5 request trong cùng `session_id` được Nginx chia đều cho cả 3 instance (`instance-598710`, `instance-fda4b2`, `instance-04b592`), nhưng khi gọi `GET /chat/{session_id}/history`, Redis vẫn trả đủ toàn bộ **10 messages** (5 câu hỏi + 5 câu trả lời), chứng minh hệ thống hoàn toàn stateless.
+
+---
+
 ## AI log
 - **CP1 (`01-localhost-vs-production/`):** Nhờ AI hỗ trợ cài môi trường Python trên WSL2 (`uv` + `.venv`), chạy thử hai bản `develop/app.py` và `production/app.py`, kiểm tra các endpoint `/ask`, `/health`, `/ready` bằng `curl` và tổng hợp câu trả lời vào file này.
 - **CP2 (`02-docker/`):** Nhờ AI hỗ trợ vẽ sơ đồ kiến trúc. Đã tự kiểm tra lại số liệu đo và câu trả lời theo `Dockerfile` và `docker-compose.yml`. Ghi lại các mốc đã làm vào Part 2.
 - **CP3 (`04-api-gateway/`):** Nhờ AI chạy kiểm chứng lại các endpoint và tổng hợp kết quả `curl -i` (đã che token/key) cùng giải thích `rate_limiter.py`, `cost_guard.py` vào mục Part 4.
+- **CP4 (`05-scaling-reliability/`):** Nhờ AI tổng hợp giải thích `/health` vs `/ready`, graceful shutdown, stateless Redis vào mục Part 5.
