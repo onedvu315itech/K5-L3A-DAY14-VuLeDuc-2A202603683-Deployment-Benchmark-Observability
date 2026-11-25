@@ -312,8 +312,36 @@ X-XSS-Protection: 1; mode=block
 
 ---
 
+## Part 6: Final Project (`06-lab-complete/`)
+
+Kết quả chạy `python check_production_ready.py` (chế độ đầy đủ có Docker trong WSL2):
+
+```text
+================================================================
+  📋 Checklist Deliverable
+     ✅ Dockerfile (multi-stage, < 500 MB)
+     ✅ docker-compose.yml (agent + redis)
+     ✅ .dockerignore
+     ✅ Health check endpoint (GET /health)
+     ✅ Readiness endpoint (GET /ready)
+     ✅ API Key authentication
+     ✅ Rate limiting
+     ✅ Cost guard
+     ✅ Config từ environment variables
+     ✅ Structured logging
+     ✅ Graceful shutdown
+     ✅ Public URL ready (Railway / Render config)
+----------------------------------------------------------------
+  Result: 12/12 tiêu chí đạt · 43/43 checks passed
+  🎉 PASS 12/12 — PRODUCTION READY! Deploy nào!
+================================================================
+```
+
+---
+
 ## AI log
 - **CP1 (`01-localhost-vs-production/`):** Nhờ AI hỗ trợ cài môi trường Python trên WSL2 (`uv` + `.venv`), chạy thử hai bản `develop/app.py` và `production/app.py`, kiểm tra các endpoint `/ask`, `/health`, `/ready` bằng `curl` và tổng hợp câu trả lời vào file này.
 - **CP2 (`02-docker/`):** Nhờ AI hỗ trợ vẽ sơ đồ kiến trúc. Đã tự kiểm tra lại số liệu đo và câu trả lời theo `Dockerfile` và `docker-compose.yml`. Ghi lại các mốc đã làm vào Part 2.
 - **CP3 (`04-api-gateway/`):** Nhờ AI chạy kiểm chứng lại các endpoint và tổng hợp kết quả `curl -i` (đã che token/key) cùng giải thích `rate_limiter.py`, `cost_guard.py` vào mục Part 4.
 - **CP4 (`05-scaling-reliability/`):** Nhờ AI tổng hợp giải thích `/health` vs `/ready`, graceful shutdown, stateless Redis vào mục Part 5.
+- **CP5 (`06-lab-complete/`):** Nhờ AI hỗ trợ sửa và hoàn thiện các `TODO` trong `app/` (`config.py`, `auth.py`, `redis_client.py`, `rate_limiter.py`, `cost_guard.py`, `main.py`), `Dockerfile` (multi-stage `public.ecr.aws/docker/library/python:3.11-slim`, non-root, `exec uvicorn`), `docker-compose.yml`, `.dockerignore`, `.env.example`, `railway.toml`, `render.yaml`. Tổng hợp thông tin và kết quả vào Part 6.
