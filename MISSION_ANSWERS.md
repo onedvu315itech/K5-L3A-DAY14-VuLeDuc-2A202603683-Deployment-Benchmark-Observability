@@ -153,6 +153,101 @@ X-XSS-Protection: 1; mode=block
 
 ---
 
+## Part 4: API Security
+
+### Exercise 4.1–4.3: Kết quả test `401`, `200`, và `429` (`curl -i`, đã che token/key)
+
+1. **Bản `develop/` (`04-api-gateway/develop/app.py`) — API Key Authentication:**
+   - **Không có `X-API-Key` → `401 Unauthorized`:**
+     ```http
+     HTTP/1.1 401 Unauthorized
+     date: Wed, 25 Nov 2026 08:50:20 GMT
+     server: uvicorn
+     content-length: 67
+     content-type: application/json
+
+     {"detail":"Missing API key. Include header: X-API-Key: <your-key>"}
+     ```
+   - **Có `X-API-Key: <REDACTED_API_KEY>` → `200 OK`:**
+     ```http
+     HTTP/1.1 200 OK
+     date: Wed, 25 Nov 2026 08:50:20 GMT
+     server: uvicorn
+     content-length: 122
+     content-type: application/json
+
+     {"question":"Hello","answer":"Tôi là AI agent được deploy lên cloud. Câu hỏi của bạn đã được nhận."}
+     ```
+
+2. **Bản `production/` (`04-api-gateway/production/app.py`) — JWT Authentication & Rate Limiting:**
+   - **Không có JWT (`Authorization: Bearer <REDACTED_TOKEN>`) → `401 Unauthorized`:**
+     ```http
+     HTTP/1.1 401 Unauthorized
+     date: Wed, 25 Nov 2026 08:49:39 GMT
+     server: uvicorn
+     www-authenticate: Bearer
+     content-length: 76
+     content-type: application/json
+     x-content-type-options: nosniff
+     x-frame-options: DENY
+     x-xss-protection: 1; mode=block
+     referrer-policy: strict-origin-when-cross-origin
+
+     {"detail":"Authentication required. Include: Authorization: Bearer <token>"}
+     ```
+   - **Lấy token ở `POST /auth/token` (`student` / `demo123`) và gọi `POST /ask` với `Authorization: Bearer <REDACTED_TOKEN>` → `200 OK`:**
+     ```http
+     HTTP/1.1 200 OK
+     date: Wed, 25 Nov 2026 08:49:40 GMT
+     server: uvicorn
+     content-length: 216
+     content-type: application/json
+     x-content-type-options: nosniff
+     x-frame-options: DENY
+     x-xss-protection: 1; mode=block
+     referrer-policy: strict-origin-when-cross-origin
+
+     {"question":"Explain JWT","answer":"Đây là câu trả lời từ AI agent (mock). Trong production, đây sẽ là response từ OpenAI/Anthropic.","usage":{"requests_remaining":9,"budget_remaining_usd":0.000209}}
+     ```
+   - **Vòng lặp gọi liên tục 11 lần (`student` giới hạn 10 req/phút) → Request 2..10 trả `200`, Request 11 trả `429 Too Many Requests`:**
+     ```http
+     HTTP/1.1 429 Too Many Requests
+     date: Wed, 25 Nov 2026 08:49:41 GMT
+     server: uvicorn
+     x-ratelimit-limit: 10
+     x-ratelimit-remaining: 0
+     x-ratelimit-reset: 1795596642
+     retry-after: 59
+     content-length: 98
+     content-type: application/json
+     x-content-type-options: nosniff
+     x-frame-options: DENY
+     x-xss-protection: 1; mode=block
+     referrer-policy: strict-origin-when-cross-origin
+
+     {"detail":{"error":"Rate limit exceeded","limit":10,"window_seconds":60,"retry_after_seconds":59}}
+     ```
+
+3. **Trả lời câu hỏi `rate_limiter.py` (Exercise 4.3):**
+   - **Thuật toán:** Sliding Window Counter (dùng `deque` lưu timestamp các request trong cửa sổ `window_seconds = 60` giây và loại bỏ các timestamp cũ hơn `now - window_seconds`).
+   - **Giới hạn:** `rate_limiter_user` cho phép **10 requests/phút** (`max_requests=10, window_seconds=60`); `rate_limiter_admin` cho phép **100 requests/phút**.
+   - **Cách bypass/nâng hạn mức cho admin:** Trong `app.py` (dòng 141), đọc `role` từ JWT payload (`limiter = rate_limiter_admin if role == "admin" else rate_limiter_user`), hoặc có thể bỏ qua bước gọi `limiter.check(...)` nếu `role == "admin"`.
+
+### Exercise 4.4: Cách làm Cost Guard & lý do cần cả Rate Limit lẫn Cost Guard
+- **Cách triển khai Cost Guard (`04-api-gateway/production/cost_guard.py`):**
+  1. **Kiểm tra trước khi gọi LLM (`check_budget(username)`):**
+     - Kiểm tra ngân sách tổng toàn hệ thống (`global_daily_budget_usd = 10.0` USD/ngày); nếu vượt, trả về `503 Service Unavailable`.
+     - Kiểm tra ngân sách theo từng user (`daily_budget_usd = 1.0` USD/ngày); nếu vượt, trả về `402 Payment Required`.
+  2. **Ghi nhận chi phí sau khi LLM trả lời (`record_usage(...)`):**
+     - Tính chi phí dựa trên số token đầu vào (`$0.00015 / 1K input tokens`) và đầu ra (`$0.0006 / 1K output tokens`), cộng dồn vào bản ghi của user và tổng hệ thống, đồng thời log cảnh báo khi đạt `80%` ngân sách (`warn_at_pct = 0.8`).
+  3. **Khi đưa lên production (nhiều instance):** Lưu state chi tiêu trong **Redis** (ví dụ key `budget:{user_id}:{YYYY-MM}` dùng `INCRBYFLOAT` + `EXPIRE`) thay vì biến in-memory để các instance dùng chung ngân sách và tự reset theo chu kỳ.
+- **Tại sao cần cả Rate Limit và Cost Guard?**
+  - **Rate limit** bảo vệ **tốc độ / lưu lượng** (giới hạn số request/phút để chống spam, DDoS, quá tải server).
+  - **Cost guard** bảo vệ **tiền / ngân sách LLM** (vì một user vẫn có thể gửi các prompt cực dài tốn rất nhiều token trong khi vẫn ở dưới ngưỡng 10 request/phút, làm đội chi phí API nếu không chặn theo USD/token).
+
+---
+
 ## AI log
 - **CP1 (`01-localhost-vs-production/`):** Nhờ AI hỗ trợ cài môi trường Python trên WSL2 (`uv` + `.venv`), chạy thử hai bản `develop/app.py` và `production/app.py`, kiểm tra các endpoint `/ask`, `/health`, `/ready` bằng `curl` và tổng hợp câu trả lời vào file này.
-- **CP2 (`02-docker/`):** Nhờ AI hỗ trợ vẽ sơ đồ kiến trúc. Đã tự kiểm tra lại số liệu đo và câu trả lời theo `Dockerfile` và `docker-compose.yml`. Ghi lại các mốc đã làm vào file này.
+- **CP2 (`02-docker/`):** Nhờ AI hỗ trợ vẽ sơ đồ kiến trúc. Đã tự kiểm tra lại số liệu đo và câu trả lời theo `Dockerfile` và `docker-compose.yml`. Ghi lại các mốc đã làm vào Part 2.
+- **CP3 (`04-api-gateway/`):** Nhờ AI chạy kiểm chứng lại các endpoint và tổng hợp kết quả `curl -i` (đã che token/key) cùng giải thích `rate_limiter.py`, `cost_guard.py` vào mục Part 4.
